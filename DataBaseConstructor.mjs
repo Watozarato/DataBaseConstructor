@@ -1,11 +1,27 @@
 import fs from "fs";
 var log=console.log;
 /** @typedef {number} int */
+/**
+ * @typedef {Object} objectSettingsForCreationDataBase
+ * @property {int} allocatedRecords Начальный предел записей
+*/
 class DB {
+	/**
+	 * 
+	 * @param {int} awaitRecords 
+	 * @param {objectSettingsForCreationDataBase} objectSettings 
+	 * @returns 
+	 */
 	static create(awaitRecords, objectSettings){
 		var allocatedRecords=objectSettings.allocatedRecords;
 		return new databaseCreation(awaitRecords, allocatedRecords);
 	}
+	/**
+	 * Создать БД из json описания БД и ArrayBuffer
+	 * @param {JSON} databaseInfoJSON 
+	 * @param {ArrayBuffer} databuffer 
+	 * @returns {databaseFilling}
+	 */
 	static createFromJSON(databaseInfoJSON, databuffer){
 		var databaseInfo=JSON.parse(databaseInfoJSON);
 		return new databaseFilling({
@@ -17,6 +33,12 @@ class DB {
 			countRecords:databaseInfo.recordsCount
 		});
 	}
+	/**
+	 * Создать БД из файлов
+	 * @param {filePath} fileOfInfo 
+	 * @param {filePath} fileOfDataBuffer 
+	 * @returns 
+	 */
 	static createFromFiles(fileOfInfo, fileOfDataBuffer){
 		var databaseInfo=JSON.parse(fs.readFileSync(fileOfInfo));
 		var databuffer=new Uint8Array(fs.readFileSync(fileOfDataBuffer)).buffer;
@@ -48,6 +70,11 @@ class databaseCreation{
 		this.#awaitRecords=awaitRecords;
 		this.#allocatedRecords=allocatedRecords;
 	}
+	/**
+	 * Не используется на момент апреля 2026 года
+	 * @param {int} bytesForHeader 
+	 * @param  {...any} objectOfTypes 
+	 */
 	setHeader(bytesForHeader, ...objectOfTypes){
 		this.#startByteOffsetForRecords=bytesForHeader;
 	}
@@ -144,7 +171,7 @@ class databaseCreation{
 	}
 	/**
 	 * Конец описания полей таблицы  
-	 * Обязательное требование: установка колбека для аллокации памяти  
+	 * **Обязательное требование:** установка колбека для аллокации памяти  
 	 * Перейти к работе с записями
 	 * @returns 
 	 */
@@ -262,9 +289,6 @@ class databaseFilling{
 		}
 		this.#callbackAllocation=object.callbackAllocation;
 		this.#startByteOffsetForRecords=object.bytesForHeader;
-	}
-	test(fieldName){
-		return this.#cacheStorage.goToFieldAnyValues(fieldName).getCachingValues()
 	}
 	/**
 	 * Добавить запись с данными
