@@ -1,28 +1,32 @@
-import fs from "fs";
 var log=console.log;
 /** @typedef {number} int */
 /**
  * @typedef {Object} objectSettingsForCreationDataBase
+ * Настройки для создания БД
  * @property {int} allocatedRecords Начальный предел записей
+ * @property {callbackAllocation} [callbackAllocation]
+ * @property {boolean} [littleEndian] Порядок записи байт
+*/
+/**
+ * @typedef {Object} objectSettingsForCreationDataBaseFromJSONorFile
+ * @property {callbackAllocation} callbackAllocation
 */
 class DB {
 	/**
-	 * 
+	 * Начать создание БД
 	 * @param {int} awaitRecords 
-	 * @param {objectSettingsForCreationDataBase} objectSettings 
-	 * @returns 
+	 * @param {objectSettingsForCreationDataBase} objectSettings
 	 */
 	static create(awaitRecords, objectSettings){
-		var allocatedRecords=objectSettings.allocatedRecords;
-		return new databaseCreation(awaitRecords, allocatedRecords);
+		return new databaseCreation(awaitRecords, objectSettings);
 	}
 	/**
-	 * Создать БД из json описания БД и ArrayBuffer
+	 * Создать БД из json описания БД (получите его через getInfo() метод после создания БД) и ArrayBuffer
 	 * @param {JSON} databaseInfoJSON 
 	 * @param {ArrayBuffer} databuffer 
-	 * @returns {databaseFilling}
+	 * @param {objectSettingsForCreationDataBaseFromJSONorFile} objectSettings
 	 */
-	static createFromJSON(databaseInfoJSON, databuffer){
+	static createFromJSON(databaseInfoJSON, databuffer, objectSettings){
 		var databaseInfo=JSON.parse(databaseInfoJSON);
 		return new databaseFilling({
 			fields:databaseInfo.fields,
@@ -30,60 +34,58 @@ class DB {
 			byteSizeOfRecord:databaseInfo.byteSizeOfRecord,
 			allocatedRecords:databaseInfo.allocatedRecords,
 			dataBuffer:new Uint8Array(databuffer).buffer,
-			countRecords:databaseInfo.recordsCount
-		});
-	}
-	/**
-	 * Создать БД из файлов
-	 * @param {filePath} fileOfInfo 
-	 * @param {filePath} fileOfDataBuffer 
-	 * @returns 
-	 */
-	static createFromFiles(fileOfInfo, fileOfDataBuffer){
-		var databaseInfo=JSON.parse(fs.readFileSync(fileOfInfo));
-		var databuffer=new Uint8Array(fs.readFileSync(fileOfDataBuffer)).buffer;
-		return new databaseFilling({
-			fields:databaseInfo.fields,
-			awaitRecords:databaseInfo.maxRecords,
-			byteSizeOfRecord:databaseInfo.byteSizeOfRecord,
-			allocatedRecords:databaseInfo.allocatedRecords,
-			dataBuffer:databuffer,
-			countRecords:databaseInfo.recordsCount
+			littleEndian:databaseInfoJSON.littleEndian,
+			countRecords:databaseInfo.recordsCount,
+			callbackAllocation:objectSettings.callbackAllocation
 		});
 	}
 }
 /** @typedef {"UTF-8" | "UTF-16"} StringTypes */
-/** @typedef {"Int8" | "Int16" | "Int32" | "Uint8" | "Uint16" | "Uint32" | "BigInt64" | "BigUint64" | "Float16" | "Float32"} NumberTypes */
+/** @typedef {"Int8" | "Int16" | "Int32" | "Uint8" | "Uint16" | "Uint32" | "BigInt64" | "BigUint64" | "Float16" | "Float32" | "Float64"} NumberTypes */
 /**
- * @callback allocationCallback
+ * @callback callbackAllocation
  * @param {number} currentRecords - Текущее количество записей
  * @param {number} maxRecords - Предел записей в БД
  */
+/**
+ * @typedef {Object} objectOfTypeForHeader
+ * @property {string} name
+ * @property {"Int8" | "Int16" | "Int32" | "Uint8" | "Uint16" | "Uint32" | "BigInt64" | "BigUint64" | "Float16" | "Float32" | "Float64" | "UTF-8" | "UTF-16"} type
+ * @property {number | string | boolean} [defaultValue]
+ * @property {int} [maxBytes]
+ */
 class databaseCreation{
+	/** @type {Field[]} */
 	#fields=[];
 	#awaitRecords=0;
 	#allocatedRecords=1;
 	#byteSizeOfRecord=0;
 	#callbackAllocation=null;
 	#startByteOffsetForRecords=0;
-	constructor(awaitRecords, allocatedRecords){
+	#littleEndian=false;
+	/**
+	 * 
+	 * @param {int} awaitRecords 
+	 * @param {objectSettingsForCreationDataBase} objectSettings 
+	 */
+	constructor(awaitRecords, objectSettings){
 		this.#awaitRecords=awaitRecords;
-		this.#allocatedRecords=allocatedRecords;
+		this.#allocatedRecords=objectSettings.allocatedRecords;
+		this.#littleEndian=(!!objectSettings.littleEndian);
+		if(objectSettings.callbackAllocation) this.#callbackAllocation=(objectSettings.callbackAllocation);
 	}
 	/**
 	 * Не используется на момент апреля 2026 года
-	 * @param {int} bytesForHeader 
-	 * @param  {...any} objectOfTypes 
+	 * @param  {...objectOfTypeForHeader} objectsOfTypes
 	 */
-	setHeader(bytesForHeader, ...objectOfTypes){
-		this.#startByteOffsetForRecords=bytesForHeader;
+	setHeader(...objectsOfTypes){
+		//this.#startByteOffsetForRecords=bytesForHeader;
 	}
 	/**
 	 * Добавить поле уникальных значений чисел.  
 	 * Помни, что уникальные поля обязательно заполнять данными во избежание дубликатов
 	 * @param {string} name 
 	 * @param {NumberTypes} type
-	 * @returns 
 	 */
 	addFieldUniqueNumberValues(name, type){
 		var byteSize=getByteSizeFromType(type);
@@ -96,7 +98,6 @@ class databaseCreation{
 	 * Добавить поле значений чисел.  
 	 * @param {string} name 
 	 * @param {NumberTypes} type
-	 * @returns 
 	 */
 	addFieldAnyNumberValues(name, type, defaultValue){
 		var byteSize=getByteSizeFromType(type);
@@ -117,39 +118,40 @@ class databaseCreation{
 	/**
 	 * Добавить поле уникальных значений строк.  
 	 * Помни, что уникальные поля обязательно заполнять данными во избежание дубликатов  
-	 * Пожалуйста помни, что UTF-8 может кодироваться хоть 4 байтами на один символ, грамотно выбирай maxChars
+	 * Пожалуйста помни, что UTF-8 может кодироваться хоть 4 байтами на один символ, грамотно выбирай maxBytes  
+	 * **Ограничение:** макс.размер строки в байтах - 2 мегабайта
 	 * @param {string} name 
 	 * @param {StringTypes} type 
-	 * @param {int} maxChars 
-	 * @returns 
+	 * @param {int} maxBytes
 	 */
-	addFieldUniqueStringValues(name, type, maxChars){
-		maxChars*=getByteSizeFromType(type);
+	addFieldUniqueStringValues(name, type, maxBytes){
+		if(maxBytes%getByteSizeFromType(type)!==0) throw Error("Некорректное кол-во байт для строки");
+		if(maxBytes>=16_777_215) throw RangeError("Строка не может быть больше 2 мегабайт");
 		if(this.#fields.find(elem=>elem.name===name)) throw Error("Таблица не может содержать одинаковые поля");
-		this.#fields.push({name, type, offset:this.#byteSizeOfRecord, byteSize: maxChars, isFieldOfUniqueValues: true});
-		this.#byteSizeOfRecord+=maxChars;
+		this.#fields.push({name, type, offset:this.#byteSizeOfRecord, byteSize: maxBytes, isFieldOfUniqueValues: true});
+		this.#byteSizeOfRecord+=maxBytes;
 		return this;
 	}
 	/**
 	 * Добавить поле значений строк.  
-	 * Пожалуйста помни, что UTF-8 может кодироваться хоть 4 байтами на один символ, грамотно выбирай maxChars
+	 * Пожалуйста помни, что UTF-8 может кодироваться хоть 4 байтами на один символ, грамотно выбирай maxBytes  
+	 * **Ограничение:** макс.размер строки в байтах - 2 мегабайта
 	 * @param {string} name 
 	 * @param {StringTypes} type 
-	 * @param {int} maxChars 
-	 * @returns 
+	 * @param {int} maxBytes
 	 */
-	addFieldAnyStringValues(name, type, maxChars, defaultValue=""){
-		maxChars*=getByteSizeFromType(type);
+	addFieldAnyStringValues(name, type, maxBytes, defaultValue=""){
+		if(maxBytes%getByteSizeFromType(type)!==0) throw Error("Некорректное кол-во байт для строки");
+		if(maxBytes>=16_777_215) throw RangeError("Строка не может быть больше 2 мегабайт");
 		if(this.#fields.find(elem=>elem.name===name)) throw Error("Таблица не может содержать одинаковые поля")
-		this.#fields.push({name, type, defaultValue, offset:this.#byteSizeOfRecord, byteSize: maxChars, isFieldOfUniqueValues:false});
-		this.#byteSizeOfRecord+=maxChars;
+		this.#fields.push({name, type, defaultValue, offset:this.#byteSizeOfRecord, byteSize: maxBytes, isFieldOfUniqueValues:false});
+		this.#byteSizeOfRecord+=maxBytes;
 		return this;
 	}
 	/**
 	 * Добавить поле значений boolean
 	 * @param {string} name 
 	 * @param {*} defaultValue 
-	 * @returns 
 	 */
 	addFieldBooleanValues(name, defaultValue=false){
 		if(this.#fields.find(elem=>elem.name===name)) throw Error("Таблица не может содержать одинаковые поля")
@@ -161,8 +163,7 @@ class databaseCreation{
 	 * Установить функцию-колбек для вызова при заполнении выделенной памяти   
 	 * - **currentRecords**: (number) Текущее количество записей в буфере.  
 	 * - **maxRecords**: (number) Предел записей в БД до расширения.  
-	 * @param {allocationCallback} func 
-	 * @returns 
+	 * @param {callbackAllocation} func 
 	 */
 	setCallBackForAllocateMemory(func){
 		if(typeof func !== "function") throw Error("Принимает только функции");
@@ -173,7 +174,6 @@ class databaseCreation{
 	 * Конец описания полей таблицы  
 	 * **Обязательное требование:** установка колбека для аллокации памяти  
 	 * Перейти к работе с записями
-	 * @returns 
 	 */
 	endCreation(){
 		if(this.#callbackAllocation===null) throw Error("Не установлен колбек аллокации памяти")
@@ -245,6 +245,7 @@ class databaseFilling{
 	#fieldsUniqueValues=null;
 	/** @type {Map<fieldName, int>} */
 	#mapNameFieldToIndexField=null;
+	#littleEndian=false;
 	constructor(object){
 		this.#fields=object.fields;
 		this.#awaitRecords=object.awaitRecords;
@@ -287,13 +288,14 @@ class databaseFilling{
 				if(localfield.isFieldOfUniqueValues) this.#cacheStorage.goToFieldUniqueValues(localfield.name).updateValues();
 			}
 		}
+		if(!object.callbackAllocation) throw Error("Не задан колбек аллокации памяти");
 		this.#callbackAllocation=object.callbackAllocation;
 		this.#startByteOffsetForRecords=object.bytesForHeader;
+		this.#littleEndian=!!(object.littleEndian);
 	}
 	/**
 	 * Добавить запись с данными
 	 * @param  {... number | string | boolean} args 
-	 * @returns 
 	 */
 	addRecord(...args){
 		if(this.#records===this.#allocatedRecords) this.#callbackAllocation.call(this, this.#records, this.#awaitRecords);
@@ -303,10 +305,9 @@ class databaseFilling{
 			if( (i<args.length) && (args[i]!==null) ) {
 				//Если value задано
 				valueToBuffer=args[i];
-				this.#checkTypeValueWithFieldValue(localfield, valueToBuffer);
 			} else if(localfield.isFieldOfUniqueValues){
 				//Поля под уникальные значения обязаны быть заполнены
-				throw Error("Поле уникальных значений обязано обладать значением")
+				throw Error("Поле уникальных значений обязано обладать значением");
 			}
 			//Установить значение
 			this.#setValueByType(localfield, this.#records, valueToBuffer);
@@ -315,9 +316,33 @@ class databaseFilling{
 		return this;
 	}
 	/**
+	 * Добавить запись с данными с помощью объекта, где key - имя поля, value - значение в буфер
+	 * @param {Object} object
+	 */
+	addRecordByObject(object){
+		//Проверить все ли поля unique значений заданы
+		var hasAll=true;
+		for(var i=0; i<this.#fieldsUniqueValues.length; ++i){
+			var localfield=this.#fieldsUniqueValues[i];
+			if(!Object.hasOwn(object, localfield.name)){
+				hasAll=false;
+				break;
+			}
+		}
+		if(hasAll){
+			if(this.#records===this.#allocatedRecords) this.#callbackAllocation.call(this, this.#records, this.#awaitRecords);
+			for(var key in object){
+				var valueToBuffer=object[key];
+				var localfield=this.#fields[this.#mapNameFieldToIndexField.get(key)];
+				this.#setValueByType(localfield, this.#records, valueToBuffer);
+			}
+			++this.#records;
+		} else throw Error(`Не заданы данные для поля уникальных значений ${localfield.name}`);
+		return this;
+	}
+	/**
 	 * Выделить память для записей
 	 * @param {int} countRecords 
-	 * @returns 
 	 */
 	allocateMemoryForRecords(countRecords){
 		this.#allocatedRecords+=countRecords;
@@ -330,15 +355,29 @@ class databaseFilling{
 	 * Этим методом нельзя создать новые записи
 	 * @param {int} indexRecord 
 	 * @param  {... number | string | boolean} args 
-	 * @returns 
 	 */
 	setDataOfRecord(indexRecord, ...args){
-		if(indexRecord<0 || indexRecord>=this.#records) throw Error("Первый аргумент - номер записи с которой начать поиск");
+		if(indexRecord<0 || indexRecord>=this.#records) throw Error("Первый аргумент - индекс записи для изменения ее данных");
 		passArgs: for(var i=0; i<args.length; ++i){
 			var localValueOfArg=args[i];
 			if(localValueOfArg===null) continue passArgs;
 			var localfield=this.#fields[i];
 			this.#setValueByType(localfield, indexRecord, localValueOfArg);
+		}
+		return this;
+	}
+	/**
+	 * Задать данные записи по индексу с помощью объекта, где key - имя поля, value - значение в буфер
+	 * Этим методом нельзя создать новые записи
+	 * @param {int} indexRecord 
+	 * @param {Object} object 
+	 */
+	setDataOfRecordByObject(indexRecord, object){
+		if(indexRecord<0 || indexRecord>=this.#records) throw Error("Первый аргумент - индекс записи для изменения ее данных");
+		for(var key in object){
+			var valueToBuffer=object[key];
+			var localfield=this.#fields[this.#mapNameFieldToIndexField.get(key)];
+			this.#setValueByType(localfield, indexRecord, valueToBuffer);
 		}
 		return this;
 	}
@@ -488,13 +527,13 @@ class databaseFilling{
 				resultIndex=updatedSetObject.findMinValueInSetOfIndexValues(indexRecord,cachedValues);
 			}
 		}
-		return resultIndex;//this.findRecordByArrayArgs(indexRecord, arrayArgs);
+		return resultIndex;
 	}
 	/**
 	 * Вернуть массив индексов с совпадающими значениями в записях
 	 * @param {int} indexRecord 
 	 * @param {Object} objectOfArgs 
-	 * @returns 
+	 * @returns {int[]}
 	 */
 	findAllRecordsByObject(indexRecord, objectOfArgs){
 		if(indexRecord<0 || indexRecord>this.#records) throw Error("Первый аргумент - номер записи с которой начать поиск");
@@ -546,7 +585,7 @@ class databaseFilling{
 	 * Если таких нет - вернуть -1
 	 * @param {string} fieldName 
 	 * @param {number | string} value 
-	 * @returns 
+	 * @returns {int}
 	 */
 	findRecordWithValueInFieldUniqueValues(fieldName, value){
 		if (!this.#mapNameFieldToIndexField.has(fieldName)) throw Error("Поля с таким именем нет");
@@ -559,7 +598,7 @@ class databaseFilling{
 	 * Вернуть true, если данные записи совпадают с аргументами
 	 * @param {int} indexRecord 
 	 * @param  {...number | string | boolean} args 
-	 * @returns 
+	 * @returns {boolean}
 	 */
 	checkValuesInRecord(indexRecord, ...args){
 		var result=true;
@@ -611,7 +650,7 @@ class databaseFilling{
 	/**
 	 * Получить массив с данными поля из каждой записи
 	 * @param {string} fieldName 
-	 * @returns 
+	 * @returns {(number | string | boolean)[]}
 	 */
 	getValuesOfField(fieldName){
 		var localfield=this.#fields.find(elem=>elem.name===fieldName);
@@ -644,7 +683,7 @@ class databaseFilling{
 	}
 	/**
 	 * Получить массив с объектами-данными записей
-	 * @returns 
+	 * @returns {[Object]}
 	 */
 	getRecordsInfo(){
 		var records=[];
@@ -664,7 +703,7 @@ class databaseFilling{
 	 * Начинать с индекса.
 	 * @param {int} indexRecord
 	 * @param {int} countRecords 
-	 * @returns 
+	 * @returns {Object[]}
 	 */
 	getInfoSomeRecords(indexRecord, countRecords){
 		var records=new Array(countRecords);
@@ -684,6 +723,7 @@ class databaseFilling{
 	}
 	/**
 	 * Получить объект с некоторыми данными БД  
+	 * Используйте при сохранении данных в файлы  
 	 * - **maxRecords** - лимит записей в БД
 	 * - **recordsCount** - текущее количество записей
 	 * - **byteSizeOfRecord** - число байт на запись
@@ -691,6 +731,7 @@ class databaseFilling{
 	 * - **allocatedMemory** - выделенная память на будущие записи
 	 * - **allocatedRecords** - выделенные записи
 	 * - **fields** - поля БД
+	 * - **littleEndian** - порядок записи байт
 	 * @returns DataBaseInfo
 	 */
 	getInfo(){
@@ -701,13 +742,62 @@ class databaseFilling{
 			memoreUsed: this.#byteSizeOfRecord*this.#records,
 			allocatedMemory: this.#dataBuffer.byteLength-this.#byteSizeOfRecord*this.#records,
 			allocatedRecords: this.#allocatedRecords,
-			fields:this.getFields()
+			fields:this.getFields(),
+			littleEndian:this.#littleEndian
 		}
+	}
+	/**
+	 * @param {versionsToSaving} version 
+	 * Получить ArrayBuffer этой БД  
+	 * Используйте при сохранении данных в файлы  
+	 * При создании БД из createFromJSON укажите в objectSettings property - version
+	 */
+	getBufferByVersion(version){
+		var copyOfBuffer=new ArrayBuffer(this.#records*this.#byteSizeOfRecord, {
+			maxByteLength:this.#records*this.#byteSizeOfRecord+(this.#records*this.#fields.length*8)
+		});
+		var viewOnCopy=new DataView(copyOfBuffer);
+		for(var countRecord=0; countRecord<this.#records; ++countRecord){
+			for(var localfield of this.#fields){
+				var startoffset=localfield.offset*countRecord
+				var localoffset=startoffset;
+				switch(localfield.type){
+					case "UTF-8":
+					case "String8":
+						var endOffset=(startoffset+localfield.byteSize);
+						for(localoffset; localoffset<endOffset; ++localoffset){
+							if(this.#view.getUint8(localoffset)===0) break;
+						}
+						if(localfield.byteSize<255){
+							this.#view.setUint8(localfield.byteSize);
+							break;
+						} else if(localfield.byteSize<65_535){
+							this.#view.setUint8(localfield.byteSize);
+							break;
+						} else if(localfield.byteSize<16_777_215){
+							this.#view.setUint8(localfield.byteSize);
+							break;
+						}
+						break;
+					case "UTF-16":
+					case "String16":
+						var endOffset=(startoffset+localfield.byteSize);
+						for(localoffset; localoffset<endOffset; ++localoffset){
+							if(this.#view.getUint16(localoffset)===0) break;
+						}
+						break;
+					default:
+						//On number | bool types
+						
+						break;
+				}
+			}
+		}
+		return copyOfBuffer;
 	}
 	/**
 	 * Получить объект с данными записи по индексу
 	 * @param {int} indexRecord 
-	 * @returns 
 	 */
 	getDataFromRecord(indexRecord){
 		var objectResult={};
@@ -717,7 +807,7 @@ class databaseFilling{
 		return objectResult;
 	}
 	getDataFromFieldOfRecord(indexRecord, fieldName){
-		return (this.#getValueByType(this.#fields.find(elem=>elem.name===fieldName), indexRecord));
+		return (this.#getValueByType(this.#fields[this.#mapNameFieldToIndexField.get(fieldName)], indexRecord));
 	}
 	/** @type {Map<fieldName, ObjectAbstractionAboveDataBase>} */
 	#storageOfObjectAbstractionAboveDB=new Map()
@@ -788,17 +878,8 @@ class databaseFilling{
 			case "Float64":
 				result=localView.getFloat64(localoffset);
 				break;
-			//Deprecated
-			case "ASCII":
-				var strconstruct=String;
-				result="";
-				for(var i=0; i<localfield.byteSize; ++i){
-					var codeChar=localView.getUint8(localoffset+i);
-					if(codeChar===0) break;
-					result+=strconstruct.fromCharCode(codeChar);
-				}
-				break;
 			case "UTF-8":
+			case "String8":
 				var strconstruct=String;
 				result="";
 				var byteOffset=localoffset;
@@ -848,6 +929,7 @@ class databaseFilling{
 				}
 				break;
 			case "Bool":
+			case "Boolean":
 				result=(!!localView.getUint8(localoffset));
 				break;
 			default: throw Error("Неизвестный тип");
@@ -880,47 +962,37 @@ class databaseFilling{
 				localView.setInt8(localoffset, valueToBuffer);
 				break;
 			case "Int16":
-				localView.setInt16(localoffset, valueToBuffer);
+				localView.setInt16(localoffset, valueToBuffer, this.#littleEndian);
 				break;
 			case "Int32":
-				localView.setInt32(localoffset, valueToBuffer)
+				localView.setInt32(localoffset, valueToBuffer, this.#littleEndian)
 				break;
 			case "Uint8":
 				localView.setUint8(localoffset, valueToBuffer);
 				break;
 			case "Uint16":
-				localView.setUint16(localoffset, valueToBuffer);
+				localView.setUint16(localoffset, valueToBuffer, this.#littleEndian);
 				break;
 			case "Uint32":
-				localView.setUint32(localoffset, valueToBuffer)
+				localView.setUint32(localoffset, valueToBuffer, this.#littleEndian)
 				break;
 			case "BigInt64":
-				localView.setBigInt64(localoffset, valueToBuffer);
+				localView.setBigInt64(localoffset, valueToBuffer, this.#littleEndian);
 				break;
 			case "BigUint64":
-				localView.setBigUint64(localoffset, valueToBuffer);
+				localView.setBigUint64(localoffset, valueToBuffer, this.#littleEndian);
 				break;
 			case "Float16":
-				localView.setFloat16(localoffset, valueToBuffer);
+				localView.setFloat16(localoffset, valueToBuffer, this.#littleEndian);
 				break;
 			case "Float32":
-				localView.setFloat32(localoffset, valueToBuffer)
+				localView.setFloat32(localoffset, valueToBuffer, this.#littleEndian)
 				break;
 			case "Float64":
-				localView.setFloat64(localoffset, valueToBuffer)
-				break;
-			//deprecated
-			case "ASCII":
-				if(valueToBuffer!==""){
-					for(var i=0; i<valueToBuffer.length; ++i){
-						localView.setUint8(localoffset+i, valueToBuffer.charCodeAt(i));
-					}
-					if(i<localfield.byteSize){
-						localView.setUint8(localoffset+i, 0);
-					}
-				} else localView.setUint8(localoffset, 0);
+				localView.setFloat64(localoffset, valueToBuffer, this.#littleEndian)
 				break;
 			case "UTF-8":
+			case "String8":
 				if(valueToBuffer!==""){
 					if((this.#getLengthOfUTF8(valueToBuffer))>localfield.byteSize) throw Error("Кол-во байтов значения больше возможного");
 					var byteOffset=localoffset;
@@ -962,11 +1034,12 @@ class databaseFilling{
 						byteOffset+=2;
 					}
 					if((byteOffset+2)<=(localoffset+localfield.byteSize)){
-						localView.setUint16(byteOffset, 0);
+						localView.setUint16(byteOffset, 0, this.#littleEndian);
 					}
-				} else localView.setUint16(localoffset, 0);
+				} else localView.setUint16(localoffset, 0, this.#littleEndian);
 				break;
 			case "Bool":
+			case "Boolean":
 				if(valueToBuffer==false) localView.setUint8(localoffset, 0);
 				else localView.setUint8(localoffset, 1);
 				break;
@@ -999,6 +1072,7 @@ class databaseFilling{
 				if(typeof valueToField==="string") success=true;
 				break;
 			case "Bool":
+			case "Boolean":
 				if(typeof valueToField==="boolean") success=true;
 				break;
 		}
@@ -1020,42 +1094,6 @@ class databaseFilling{
 			else result+=4;
 		}
 		return result;
-	}
-	saveInfoOfDataBufferSync(path){
-		return fs.writeFileSync(path, JSON.stringify(this.getInfo()));
-	}
-	saveInfoOfDataBufferAsync(path){
-		return fs.writeFile(path, JSON.stringify(this.getInfo()));
-	}
-	saveDataBufferSync(path){
-		return fs.writeFileSync(path, this.#view, err=>{});
-	}
-	saveDataBufferAsync(path){
-		return fs.writeFile(path, this.#view, err=>{});
-	}
-	/**
-	 * Сохранить данные по файлам синхронно
-	 * @param {string} pathToInfo 
-	 * @param {string} pathToBuffer 
-	 * @returns 
-	 */
-	saveAllDataSync(pathToInfo, pathToBuffer){
-		return [
-			this.saveInfoOfDataBufferSync(pathToInfo),
-			this.saveDataBufferSync(pathToBuffer)
-		];
-	}
-	/**
-	 * Сохранить данные по файлам ассинхронно
-	 * @param {string} pathToInfo 
-	 * @param {string} pathToBuffer 
-	 * @returns 
-	 */
-	saveAllDataAsync(pathToInfo, pathToBuffer){
-		return Promise.all([
-			this.saveInfoOfDataBufferAsync(pathToInfo),
-			this.saveDataBufferAsync(pathToBuffer)
-		]);
 	}
 }
 function getByteSizeFromType(type){
@@ -1364,15 +1402,9 @@ class ObjectAbstractionAboveDataBase{
 		this.#thisForWork.thisReference.addRecord(...localarrayOfArgs)
 	}
 }
-/**
- * @typedef{object} updatedSetObject
- * @property {function} toFormWithDifferentValues
- * @property {function} toFormWithSameValues
- * @property {function} getCopy
- */
 var updatedSetObject={
 	/**
-	 * Возвращает измененный Set объект переданный в первый аргумент
+	 * Возвращает измененный Set объект переданный в первый аргумент  
 	 * @param {Set} objectSet 
 	 * @param {Set} secondObjectSet 
 	 * @returns {Set}
@@ -1384,7 +1416,7 @@ var updatedSetObject={
 		return objectSet
 	},
 	/**
-	 * Возвращает измененный Set объект переданный в первый аргумент
+	 * Возвращает измененный Set объект переданный в первый аргумент  
 	 * @param {Set} objectSet 
 	 * @param {Set} secondObjectSet 
 	 * @returns {Set}
@@ -1396,7 +1428,7 @@ var updatedSetObject={
 		return objectSet
 	},
 	/**
-	 * Вернуть копию Set объекта
+	 * Вернуть копию Set объекта  
 	 * @param {Set} objectSet 
 	 * @returns {Set}
 	 */
@@ -1404,7 +1436,7 @@ var updatedSetObject={
 		return new Set(objectSet);
 	},
 	/**
-	 * Найти минимальное значение в Set-объекте, но которое больше index
+	 * Найти минимальное значение в Set-объекте, но которое больше index  
 	 * Если такого не найдено, вернет -1
 	 * @param {int} index 
 	 * @param {Set<int>} setObj 
